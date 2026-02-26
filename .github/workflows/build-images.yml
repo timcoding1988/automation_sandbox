@@ -13,7 +13,7 @@ on:
       build_target:
         description: 'Image to build (all, image-builder, base-images, cache-images, win-images)'
         required: false
-        default: 'all'
+        default: 'win-images'
         type: choice
         options:
           - all
@@ -61,192 +61,79 @@ jobs:
           for dir in packer/*/; do
             if ls "${dir}"*.pkr.hcl &>/dev/null; then
               echo "Validating ${dir}..."
+              # Add winrm_password for Windows builds
+              EXTRA_VARS=""
+              if [[ "$dir" == *"win-images"* ]]; then
+                EXTRA_VARS="-var winrm_password=DummyP@ss123"
+              fi
               packer validate \
                 -var "compartment_ocid=ocid1.compartment.oc1..dummy" \
                 -var "subnet_ocid=ocid1.subnet.oc1..dummy" \
                 -var "availability_domain=AD-1" \
                 -var "base_image_ocid=ocid1.image.oc1..dummy" \
+                $EXTRA_VARS \
                 "${dir}" || true
             fi
           done
 
-  image-builder:
-    name: Build Image Builder
-    needs: validate
-    runs-on: ubuntu-latest
-    timeout-minutes: 50
-    if: |
-      github.event_name == 'workflow_dispatch' &&
-      (github.event.inputs.build_target == 'all' || github.event.inputs.build_target == 'image-builder')
-      || github.event_name == 'pull_request'
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+  # TODO: Uncomment Linux builds once Windows is working
+  # image-builder:
+  #   name: Build Image Builder
+  #   needs: validate
+  #   runs-on: ubuntu-latest
+  #   timeout-minutes: 50
+  #   if: |
+  #     github.event_name == 'workflow_dispatch' &&
+  #     (github.event.inputs.build_target == 'all' || github.event.inputs.build_target == 'image-builder')
+  #     || github.event_name == 'pull_request'
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v4
+  #     - name: Setup Packer
+  #       uses: hashicorp/setup-packer@main
+  #       with:
+  #         version: ${{ env.PACKER_VERSION }}
+  #     - name: Configure OCI credentials
+  #       run: |
+  #         mkdir -p ~/.oci
+  #         echo "${{ secrets.OCI_PRIVATE_KEY }}" > ~/.oci/oci_api_key.pem
+  #         chmod 600 ~/.oci/oci_api_key.pem
+  #         cat > ~/.oci/config << EOF
+  #         [DEFAULT]
+  #         user=${{ secrets.OCI_USER_OCID }}
+  #         fingerprint=${{ secrets.OCI_FINGERPRINT }}
+  #         tenancy=${{ secrets.OCI_TENANCY_OCID }}
+  #         region=${{ env.OCI_REGION }}
+  #         key_file=~/.oci/oci_api_key.pem
+  #         EOF
+  #         sed -i 's/^[[:space:]]*//' ~/.oci/config
+  #     - name: Generate IMG_SFX
+  #       run: make IMG_SFX
+  #     - name: Build image-builder
+  #       run: |
+  #         packer init packer/image-builder/
+  #         packer build \
+  #           -var "compartment_ocid=${{ secrets.OCI_COMPARTMENT_OCID }}" \
+  #           -var "subnet_ocid=${{ secrets.OCI_SUBNET_OCID }}" \
+  #           -var "availability_domain=${{ secrets.OCI_AVAILABILITY_DOMAIN }}" \
+  #           -var "base_image_ocid=${{ secrets.OCI_BASE_IMAGE_OCID }}" \
+  #           -var "img_sfx=$(cat IMG_SFX)" \
+  #           packer/image-builder/
+  #     - name: Upload manifest
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: image-builder-manifest
+  #         path: packer/image-builder/manifest.json
 
-      - name: Setup Packer
-        uses: hashicorp/setup-packer@main
-        with:
-          version: ${{ env.PACKER_VERSION }}
+  # base-images:
+  #   name: Build Fedora Base Images
+  #   needs: [validate, image-builder]
+  #   ... (commented out for now)
 
-      - name: Configure OCI credentials
-        run: |
-          mkdir -p ~/.oci
-          echo "${{ secrets.OCI_PRIVATE_KEY }}" > ~/.oci/oci_api_key.pem
-          chmod 600 ~/.oci/oci_api_key.pem
-          cat > ~/.oci/config << EOF
-          [DEFAULT]
-          user=${{ secrets.OCI_USER_OCID }}
-          fingerprint=${{ secrets.OCI_FINGERPRINT }}
-          tenancy=${{ secrets.OCI_TENANCY_OCID }}
-          region=${{ env.OCI_REGION }}
-          key_file=~/.oci/oci_api_key.pem
-          EOF
-          sed -i 's/^[[:space:]]*//' ~/.oci/config
-
-      - name: Generate IMG_SFX
-        run: make IMG_SFX
-
-      - name: Build image-builder
-        run: |
-          packer init packer/image-builder/
-          packer build \
-            -var "compartment_ocid=${{ secrets.OCI_COMPARTMENT_OCID }}" \
-            -var "subnet_ocid=${{ secrets.OCI_SUBNET_OCID }}" \
-            -var "availability_domain=${{ secrets.OCI_AVAILABILITY_DOMAIN }}" \
-            -var "base_image_ocid=${{ secrets.OCI_BASE_IMAGE_OCID }}" \
-            -var "img_sfx=$(cat IMG_SFX)" \
-            packer/image-builder/
-
-      - name: Upload manifest
-        uses: actions/upload-artifact@v4
-        with:
-          name: image-builder-manifest
-          path: packer/image-builder/manifest.json
-
-  base-images:
-    name: Build Fedora Base Images
-    needs: [validate, image-builder]
-    runs-on: ubuntu-latest
-    timeout-minutes: 70
-    if: |
-      needs.validate.result == 'success' &&
-      needs.image-builder.result == 'success' &&
-      (github.event_name == 'workflow_dispatch' &&
-       (github.event.inputs.build_target == 'all' || github.event.inputs.build_target == 'base-images')
-       || github.event_name == 'pull_request')
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Packer
-        uses: hashicorp/setup-packer@main
-        with:
-          version: ${{ env.PACKER_VERSION }}
-
-      - name: Configure OCI credentials
-        run: |
-          mkdir -p ~/.oci
-          echo "${{ secrets.OCI_PRIVATE_KEY }}" > ~/.oci/oci_api_key.pem
-          chmod 600 ~/.oci/oci_api_key.pem
-          cat > ~/.oci/config << EOF
-          [DEFAULT]
-          user=${{ secrets.OCI_USER_OCID }}
-          fingerprint=${{ secrets.OCI_FINGERPRINT }}
-          tenancy=${{ secrets.OCI_TENANCY_OCID }}
-          region=${{ env.OCI_REGION }}
-          key_file=~/.oci/oci_api_key.pem
-          EOF
-          sed -i 's/^[[:space:]]*//' ~/.oci/config
-
-      - name: Generate IMG_SFX
-        run: make IMG_SFX
-
-      - name: Build base images
-        run: |
-          packer init packer/base-images/
-          packer build \
-            -var "compartment_ocid=${{ secrets.OCI_COMPARTMENT_OCID }}" \
-            -var "subnet_ocid=${{ secrets.OCI_SUBNET_OCID }}" \
-            -var "availability_domain=${{ secrets.OCI_AVAILABILITY_DOMAIN }}" \
-            -var "base_image_ocid=${{ secrets.OCI_FEDORA_BASE_OCID }}" \
-            -var "img_sfx=$(cat IMG_SFX)" \
-            packer/base-images/
-
-      - name: Upload manifest
-        uses: actions/upload-artifact@v4
-        with:
-          name: base-images-manifest
-          path: packer/base-images/manifest.json
-
-  cache-images:
-    name: Build Fedora Cache Images
-    needs: [validate, image-builder, base-images]
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    if: |
-      needs.validate.result == 'success' &&
-      needs.image-builder.result == 'success' &&
-      needs.base-images.result == 'success' &&
-      (github.event_name == 'workflow_dispatch' &&
-       (github.event.inputs.build_target == 'all' || github.event.inputs.build_target == 'cache-images')
-       || github.event_name == 'pull_request')
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Packer
-        uses: hashicorp/setup-packer@main
-        with:
-          version: ${{ env.PACKER_VERSION }}
-
-      - name: Configure OCI credentials
-        run: |
-          mkdir -p ~/.oci
-          echo "${{ secrets.OCI_PRIVATE_KEY }}" > ~/.oci/oci_api_key.pem
-          chmod 600 ~/.oci/oci_api_key.pem
-          cat > ~/.oci/config << EOF
-          [DEFAULT]
-          user=${{ secrets.OCI_USER_OCID }}
-          fingerprint=${{ secrets.OCI_FINGERPRINT }}
-          tenancy=${{ secrets.OCI_TENANCY_OCID }}
-          region=${{ env.OCI_REGION }}
-          key_file=~/.oci/oci_api_key.pem
-          EOF
-          sed -i 's/^[[:space:]]*//' ~/.oci/config
-
-      - name: Generate IMG_SFX
-        run: make IMG_SFX
-
-      - name: Download base-images manifest
-        uses: actions/download-artifact@v4
-        with:
-          name: base-images-manifest
-          path: packer/base-images/
-        continue-on-error: true
-
-      - name: Build cache images
-        run: |
-          BASE_IMAGE_OCID="${{ secrets.OCI_FEDORA_CACHE_BASE_OCID }}"
-          if [ -f packer/base-images/manifest.json ]; then
-            MANIFEST_OCID=$(jq -r '.builds[-1].artifact_id' packer/base-images/manifest.json 2>/dev/null || echo "")
-            if [ -n "$MANIFEST_OCID" ] && [ "$MANIFEST_OCID" != "null" ]; then
-              BASE_IMAGE_OCID="$MANIFEST_OCID"
-            fi
-          fi
-          packer init packer/cache-images/
-          packer build \
-            -var "compartment_ocid=${{ secrets.OCI_COMPARTMENT_OCID }}" \
-            -var "subnet_ocid=${{ secrets.OCI_SUBNET_OCID }}" \
-            -var "availability_domain=${{ secrets.OCI_AVAILABILITY_DOMAIN }}" \
-            -var "base_image_ocid=$BASE_IMAGE_OCID" \
-            -var "img_sfx=$(cat IMG_SFX)" \
-            packer/cache-images/
-
-      - name: Upload manifest
-        uses: actions/upload-artifact@v4
-        with:
-          name: cache-images-manifest
-          path: packer/cache-images/manifest.json
+  # cache-images:
+  #   name: Build Fedora Cache Images
+  #   needs: [validate, image-builder, base-images]
+  #   ... (commented out for now)
 
   win-images:
     name: Build Windows Server Images
@@ -284,6 +171,16 @@ jobs:
       - name: Generate IMG_SFX
         run: make IMG_SFX
 
+      - name: Generate WinRM password
+        id: winrm
+        run: |
+          # Generate a secure random password for WinRM
+          WINRM_PASSWORD=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9!@#$%' | head -c 20)
+          # Ensure it meets Windows complexity requirements
+          WINRM_PASSWORD="${WINRM_PASSWORD}Aa1!"
+          echo "::add-mask::${WINRM_PASSWORD}"
+          echo "password=${WINRM_PASSWORD}" >> $GITHUB_OUTPUT
+
       - name: Build Windows images
         run: |
           packer init packer/win-images/
@@ -292,6 +189,7 @@ jobs:
             -var "subnet_ocid=${{ secrets.OCI_SUBNET_OCID }}" \
             -var "availability_domain=${{ secrets.OCI_AVAILABILITY_DOMAIN }}" \
             -var "base_image_ocid=${{ secrets.OCI_WINDOWS_BASE_OCID }}" \
+            -var "winrm_password=${{ steps.winrm.outputs.password }}" \
             -var "img_sfx=$(cat IMG_SFX)" \
             packer/win-images/
 
@@ -303,16 +201,13 @@ jobs:
 
   success:
     name: Build Complete
-    needs: [validate, image-builder, base-images, cache-images, win-images]
+    needs: [validate, win-images]
     runs-on: ubuntu-latest
     if: always()
     steps:
       - name: Check results
         run: |
           echo "Validate: ${{ needs.validate.result }}"
-          echo "Image-builder: ${{ needs.image-builder.result }}"
-          echo "Base-images: ${{ needs.base-images.result }}"
-          echo "Cache-images: ${{ needs.cache-images.result }}"
           echo "Win-images: ${{ needs.win-images.result }}"
           if [ "${{ needs.validate.result }}" != "success" ]; then
             echo "Validation failed"

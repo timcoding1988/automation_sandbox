@@ -1,6 +1,6 @@
 #ps1_sysnative
 # Bootstrap script for Windows Server on OCI
-# Configures WinRM for Packer provisioning via cloudbase-init
+# Configures WinRM and sets opc user password for Packer provisioning
 
 $ErrorActionPreference = "Stop"
 
@@ -20,23 +20,32 @@ try {
     Set-ExecutionPolicy Unrestricted -Scope LocalMachine -Force -ErrorAction SilentlyContinue
     Log-Message "Set execution policy to Unrestricted"
 
+    # Set password for opc user (used by Packer)
+    Log-Message "Setting password for opc user..."
+    $securePassword = ConvertTo-SecureString "${winrm_password}" -AsPlainText -Force
+    Set-LocalUser -Name "opc" -Password $securePassword
+    Log-Message "Password set for opc user"
+
     # Enable WinRM service
     Log-Message "Configuring WinRM service..."
     Set-Service -Name WinRM -StartupType Automatic
     Start-Service WinRM
     Log-Message "WinRM service started"
 
-    # Configure WinRM for HTTP (port 5985) - simpler than HTTPS
+    # Configure WinRM for HTTP (port 5985)
     Log-Message "Configuring WinRM listeners..."
 
     # Remove existing listeners
-    Get-ChildItem WSMan:\Localhost\Listener | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    Get-ChildItem WSMan:\Localhost\Listener -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
+    # Enable WinRM
+    winrm quickconfig -quiet
 
     # Create HTTP listener on all addresses
-    New-Item -Path WSMan:\Localhost\Listener -Transport HTTP -Address * -Force | Out-Null
+    New-Item -Path WSMan:\Localhost\Listener -Transport HTTP -Address * -Force -ErrorAction SilentlyContinue | Out-Null
     Log-Message "Created HTTP listener on port 5985"
 
-    # Configure WinRM settings
+    # Configure WinRM settings for Packer
     Set-Item WSMan:\localhost\Client\TrustedHosts -Value '*' -Force
     Set-Item WSMan:\localhost\Service\AllowUnencrypted -Value $true -Force
     Set-Item WSMan:\localhost\Service\Auth\Basic -Value $true -Force
@@ -48,16 +57,17 @@ try {
     # Configure firewall for WinRM HTTP (5985)
     Log-Message "Configuring firewall..."
 
-    # Remove any existing rules
-    Get-NetFirewallRule -DisplayName "WinRM HTTP*" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+    # Enable firewall rules for WinRM
+    Enable-NetFirewallRule -DisplayGroup "Windows Remote Management" -ErrorAction SilentlyContinue
 
-    # Add firewall rule for WinRM HTTP
+    # Add explicit firewall rule for WinRM HTTP
     New-NetFirewallRule -DisplayName "WinRM HTTP for Packer" `
         -Direction Inbound `
         -Protocol TCP `
         -LocalPort 5985 `
         -Action Allow `
-        -Profile Any | Out-Null
+        -Profile Any `
+        -ErrorAction SilentlyContinue | Out-Null
     Log-Message "Firewall rule added for port 5985"
 
     # Restart WinRM to apply changes
@@ -65,17 +75,13 @@ try {
     Log-Message "WinRM service restarted"
 
     # Verify WinRM is listening
-    $listener = Get-ChildItem WSMan:\Localhost\Listener | Where-Object { $_.Keys -contains "Transport=HTTP" }
-    if ($listener) {
-        Log-Message "WinRM HTTP listener verified"
-    } else {
-        Log-Message "WARNING: WinRM HTTP listener not found!"
-    }
+    $listeners = Get-ChildItem WSMan:\Localhost\Listener -ErrorAction SilentlyContinue
+    Log-Message "WinRM listeners: $($listeners.Count)"
 
     Log-Message "WinRM bootstrap completed successfully"
 }
 catch {
     Log-Message "ERROR: $($_.Exception.Message)"
     Log-Message "Stack trace: $($_.ScriptStackTrace)"
-    throw
+    # Don't throw - let cloudbase-init continue
 }

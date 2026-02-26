@@ -64,7 +64,14 @@ variable "base_image_ocid" {
   description = "OCID of the Windows Server 2022 image from OCI marketplace"
 }
 
-# Source: OCI Compute Instance (Bare Metal for Hyper-V)
+variable "winrm_password" {
+  type        = string
+  description = "Password for WinRM authentication"
+  sensitive   = true
+  default     = ""
+}
+
+# Source: OCI Compute Instance
 source "oracle-oci" "windows-server" {
   compartment_ocid    = var.compartment_ocid
   availability_domain = var.availability_domain
@@ -73,8 +80,7 @@ source "oracle-oci" "windows-server" {
   # Windows Server 2022 from OCI marketplace
   base_image_ocid = var.base_image_ocid
 
-  # VM shape for Windows (bare metal not compatible with Windows images)
-  # Note: Hyper-V/WSL requires bare metal, but image build can use VM
+  # VM shape for Windows
   shape = "VM.Standard.E5.Flex"
   shape_config {
     ocpus         = 4
@@ -87,12 +93,17 @@ source "oracle-oci" "windows-server" {
   # WinRM communicator for Windows
   communicator   = "winrm"
   winrm_username = "opc"
+  winrm_password = var.winrm_password
   winrm_insecure = true
-  winrm_use_ssl  = true
+  winrm_use_ssl  = false
+  winrm_port     = 5985
   winrm_timeout  = "30m"
 
-  # User data to configure WinRM
-  user_data_file = "${path.root}/scripts/bootstrap.ps1"
+  # User data to configure WinRM (cloudbase-init format for OCI Windows)
+  # The script must set password for opc user and enable WinRM
+  user_data = base64encode(templatefile("${path.root}/scripts/bootstrap.ps1.tpl", {
+    winrm_password = var.winrm_password
+  }))
 
   # Instance configuration
   instance_name = "packer-windows-server-${var.img_sfx}"
