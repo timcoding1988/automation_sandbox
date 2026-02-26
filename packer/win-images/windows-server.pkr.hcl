@@ -91,13 +91,14 @@ source "oracle-oci" "windows-server" {
   image_name = "windows-server-${var.img_sfx}"
 
   # WinRM communicator for Windows
-  communicator   = "winrm"
-  winrm_username = "opc"
-  winrm_password = var.winrm_password
-  winrm_insecure = true
-  winrm_use_ssl  = false
-  winrm_port     = 5985
-  winrm_timeout  = "30m"
+  communicator         = "winrm"
+  winrm_username       = "opc"
+  winrm_password       = var.winrm_password
+  winrm_insecure       = true
+  winrm_use_ssl        = false
+  winrm_port           = 5985
+  winrm_timeout        = "30m"
+  pause_before_connecting = "3m"  # Give cloudbase-init time to configure WinRM
 
   # User data to configure WinRM (cloudbase-init format for OCI Windows)
   # The script must set password for opc user and enable WinRM

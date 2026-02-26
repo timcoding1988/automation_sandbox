@@ -181,17 +181,41 @@ jobs:
           echo "::add-mask::${WINRM_PASSWORD}"
           echo "password=${WINRM_PASSWORD}" >> $GITHUB_OUTPUT
 
+      - name: Install OCI CLI
+        run: |
+          pip install oci-cli
+          oci setup repair-file-permissions --file ~/.oci/config
+          oci setup repair-file-permissions --file ~/.oci/oci_api_key.pem
+
       - name: Build Windows images
+        id: packer_build
         run: |
           packer init packer/win-images/
-          packer build \
+          # Run Packer with debug output
+          PACKER_LOG=1 packer build \
             -var "compartment_ocid=${{ secrets.OCI_COMPARTMENT_OCID }}" \
             -var "subnet_ocid=${{ secrets.OCI_SUBNET_OCID }}" \
             -var "availability_domain=${{ secrets.OCI_AVAILABILITY_DOMAIN }}" \
             -var "base_image_ocid=${{ secrets.OCI_WINDOWS_BASE_OCID }}" \
             -var "winrm_password=${{ steps.winrm.outputs.password }}" \
             -var "img_sfx=$(cat IMG_SFX)" \
-            packer/win-images/
+            packer/win-images/ 2>&1 | tee packer.log || true
+
+          # Extract instance OCID from log
+          INSTANCE_OCID=$(grep -oP 'ocid1\.instance\.[^)]+' packer.log | head -1 || echo "")
+          echo "instance_ocid=${INSTANCE_OCID}" >> $GITHUB_OUTPUT
+
+      - name: Debug - Get Windows initial credentials
+        if: always() && steps.packer_build.outputs.instance_ocid != ''
+        run: |
+          echo "Instance OCID: ${{ steps.packer_build.outputs.instance_ocid }}"
+          oci compute instance get-windows-initial-creds \
+            --instance-id "${{ steps.packer_build.outputs.instance_ocid }}" || echo "Could not get credentials"
+
+          # Get instance details
+          oci compute instance get \
+            --instance-id "${{ steps.packer_build.outputs.instance_ocid }}" \
+            --query 'data.{state:"lifecycle-state", ip:"primary-private-ip"}' || echo "Could not get instance"
 
       - name: Upload manifest
         uses: actions/upload-artifact@v4
