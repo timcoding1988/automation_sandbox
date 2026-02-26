@@ -1,0 +1,135 @@
+name: Import Fedora to OCI
+
+on:
+  workflow_dispatch:
+    inputs:
+      fedora_release:
+        description: 'Fedora release version'
+        required: false
+        default: '43'
+        type: string
+      image_source:
+        description: 'Image source'
+        required: true
+        default: 'fedora-project'
+        type: choice
+        options:
+          - fedora-project  # Download from Fedora Project
+          - automation-images  # Use artifact from automation_images
+
+env:
+  OCI_REGION: us-ashburn-1
+
+jobs:
+  import-fedora:
+    name: Import Fedora ${{ inputs.fedora_release }} to OCI
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-utils jq
+
+      - name: Install OCI CLI
+        run: |
+          curl -L -o install.sh https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh
+          chmod +x install.sh
+          ./install.sh --accept-all-defaults
+          echo "$HOME/bin" >> $GITHUB_PATH
+
+      - name: Configure OCI credentials
+        run: |
+          mkdir -p ~/.oci
+          echo "${{ secrets.OCI_PRIVATE_KEY }}" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/oci_api_key.pem
+          cat > ~/.oci/config << EOF
+          [DEFAULT]
+          user=${{ secrets.OCI_USER_OCID }}
+          fingerprint=${{ secrets.OCI_FINGERPRINT }}
+          tenancy=${{ secrets.OCI_TENANCY_OCID }}
+          region=${{ env.OCI_REGION }}
+          key_file=~/.oci/oci_api_key.pem
+          EOF
+          sed -i 's/^[[:space:]]*//' ~/.oci/config
+
+      - name: Generate IMG_SFX
+        run: make IMG_SFX
+
+      - name: Download from Fedora Project
+        if: inputs.image_source == 'fedora-project'
+        run: |
+          FEDORA_RELEASE="${{ inputs.fedora_release }}"
+          mkdir -p /tmp/oci_images_tmp
+
+          # Try multiple URL patterns (Fedora changes these occasionally)
+          for pattern in \
+            "https://download.fedoraproject.org/pub/fedora/linux/releases/${FEDORA_RELEASE}/Cloud/x86_64/images/Fedora-Cloud-Base-Generic.x86_64-${FEDORA_RELEASE}-1.6.qcow2" \
+            "https://download.fedoraproject.org/pub/fedora/linux/releases/${FEDORA_RELEASE}/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-${FEDORA_RELEASE}-1.6.x86_64.qcow2" \
+            "https://download.fedoraproject.org/pub/fedora/linux/releases/${FEDORA_RELEASE}/Cloud/x86_64/images/Fedora-Cloud-Base-${FEDORA_RELEASE}-*.x86_64.qcow2"
+          do
+            echo "Trying: $pattern"
+            if curl -L -f -o /tmp/oci_images_tmp/fedora.qcow2 "$pattern" 2>/dev/null; then
+              echo "Downloaded successfully from: $pattern"
+              break
+            fi
+          done
+
+          if [ ! -f /tmp/oci_images_tmp/fedora.qcow2 ]; then
+            echo "Failed to download Fedora image"
+            exit 1
+          fi
+
+          ls -lh /tmp/oci_images_tmp/fedora.qcow2
+
+      - name: Download from automation_images
+        if: inputs.image_source == 'automation-images'
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          repo: ${{ github.repository_owner }}/automation_images
+          workflow: build.yml
+          name: fedora-base-image
+          path: /tmp/oci_images_tmp/
+          search_artifacts: true
+        continue-on-error: true
+
+      - name: Import to OCI
+        env:
+          OCI_COMPARTMENT_OCID: ${{ secrets.OCI_COMPARTMENT_OCID }}
+          OCI_BUCKET: oci-images-import
+        run: |
+          chmod +x scripts/import-fedora-to-oci.sh
+
+          if [ -f /tmp/oci_images_tmp/fedora.qcow2 ]; then
+            IMAGE_PATH=/tmp/oci_images_tmp/fedora.qcow2
+          elif [ -f /tmp/oci_images_tmp/disk.raw.tar.gz ]; then
+            IMAGE_PATH=/tmp/oci_images_tmp/disk.raw.tar.gz
+          else
+            echo "No image file found"
+            ls -la /tmp/oci_images_tmp/
+            exit 1
+          fi
+
+          IMAGE_NAME="fedora-${{ inputs.fedora_release }}-base-$(cat IMG_SFX)"
+          ./scripts/import-fedora-to-oci.sh "$IMAGE_PATH" "$IMAGE_NAME"
+
+      - name: Upload manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: imported-manifest
+          path: packer/imported-manifest.json
+
+      - name: Output Image OCID
+        run: |
+          if [ -f packer/imported-manifest.json ]; then
+            echo "## Imported Image" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+            echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Image OCID | $(jq -r '.image_ocid' packer/imported-manifest.json) |" >> $GITHUB_STEP_SUMMARY
+            echo "| Image Name | $(jq -r '.image_name' packer/imported-manifest.json) |" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Set this as \`OCI_FEDORA_BASE_OCID\` in GitHub secrets to use in Packer builds." >> $GITHUB_STEP_SUMMARY
+          fi
