@@ -101,7 +101,7 @@ source "oracle-oci" "windows-server" {
 
   # User data to configure WinRM (cloudbase-init format for OCI Windows)
   # The script must set password for opc user and enable WinRM
-  user_data = base64encode(templatefile("${path.root}/scripts/bootstrap.ps1.tpl", {
+  user_data = base64encode(templatefile("${path.cwd}/packer/win-images/scripts/bootstrap.ps1.tpl", {
     winrm_password = var.winrm_password
   }))
 
