@@ -21,6 +21,11 @@ on:
           - base-images
           - cache-images
           - win-images
+      debug_mode:
+        description: 'Debug mode - keeps instance running for 2h for troubleshooting'
+        required: false
+        default: false
+        type: boolean
 
 env:
   OCI_REGION: us-ashburn-1
@@ -191,6 +196,11 @@ jobs:
         id: packer_build
         run: |
           packer init packer/win-images/
+
+          # Set debug mode from input
+          DEBUG_MODE="${{ inputs.debug_mode || 'false' }}"
+          echo "Debug mode: $DEBUG_MODE"
+
           # Run Packer with debug output
           PACKER_LOG=1 packer build \
             -var "compartment_ocid=${{ secrets.OCI_COMPARTMENT_OCID }}" \
@@ -198,24 +208,59 @@ jobs:
             -var "availability_domain=${{ secrets.OCI_AVAILABILITY_DOMAIN }}" \
             -var "base_image_ocid=${{ secrets.OCI_WINDOWS_BASE_OCID }}" \
             -var "winrm_password=${{ steps.winrm.outputs.password }}" \
+            -var "debug_mode=$DEBUG_MODE" \
             -var "img_sfx=$(cat IMG_SFX)" \
             packer/win-images/ 2>&1 | tee packer.log || true
 
-          # Extract instance OCID from log
-          INSTANCE_OCID=$(grep -oP 'ocid1\.instance\.[^)]+' packer.log | head -1 || echo "")
+          # Extract instance OCID and IP from log
+          INSTANCE_OCID=$(grep -oP 'ocid1\.instance\.[^)"\s]+' packer.log | head -1 || echo "")
+          INSTANCE_IP=$(grep -oP '\d+\.\d+\.\d+\.\d+' packer.log | head -1 || echo "")
           echo "instance_ocid=${INSTANCE_OCID}" >> $GITHUB_OUTPUT
+          echo "instance_ip=${INSTANCE_IP}" >> $GITHUB_OUTPUT
 
-      - name: Debug - Get Windows initial credentials
+      - name: Debug - Get instance connection info
         if: always() && steps.packer_build.outputs.instance_ocid != ''
         run: |
+          echo "=========================================="
+          echo "INSTANCE DEBUG INFO"
+          echo "=========================================="
           echo "Instance OCID: ${{ steps.packer_build.outputs.instance_ocid }}"
-          oci compute instance get-windows-initial-creds \
-            --instance-id "${{ steps.packer_build.outputs.instance_ocid }}" || echo "Could not get credentials"
+          echo "Instance IP: ${{ steps.packer_build.outputs.instance_ip }}"
+          echo ""
 
-          # Get instance details
-          oci compute instance get \
+          # Get instance state
+          INSTANCE_STATE=$(oci compute instance get \
             --instance-id "${{ steps.packer_build.outputs.instance_ocid }}" \
-            --query 'data.{state:"lifecycle-state", ip:"primary-private-ip"}' || echo "Could not get instance"
+            --query 'data."lifecycle-state"' --raw-output 2>/dev/null || echo "UNKNOWN")
+          echo "Instance State: $INSTANCE_STATE"
+
+          # Get public IP if available
+          echo ""
+          echo "Looking for VNIC attachments..."
+          oci compute instance list-vnics \
+            --instance-id "${{ steps.packer_build.outputs.instance_ocid }}" \
+            --query 'data[0].{"public-ip":"public-ip", "private-ip":"private-ip"}' 2>/dev/null || echo "Could not get VNIC info"
+
+          echo ""
+          echo "WinRM Password (for opc user): Check masked output above"
+          echo ""
+
+          # Only try to get initial creds if instance is still running
+          if [ "$INSTANCE_STATE" = "RUNNING" ]; then
+            echo "OCI-generated credentials (if available):"
+            oci compute instance get-windows-initial-creds \
+              --instance-id "${{ steps.packer_build.outputs.instance_ocid }}" 2>/dev/null || echo "Could not get OCI credentials"
+          fi
+
+          echo ""
+          echo "=========================================="
+          if [ "${{ inputs.debug_mode }}" = "true" ] && [ "$INSTANCE_STATE" = "RUNNING" ]; then
+            echo "DEBUG MODE: Instance will stay running for ~2 hours"
+            echo "Connect via RDP to the public IP above"
+            echo "Username: opc"
+            echo "Password: (the generated WinRM password)"
+          fi
+          echo "=========================================="
 
       - name: Upload manifest
         uses: actions/upload-artifact@v4

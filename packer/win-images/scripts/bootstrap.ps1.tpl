@@ -1,6 +1,6 @@
 #ps1_sysnative
 # Bootstrap script for Windows Server on OCI
-# Runs via cloudbase-init to configure WinRM for Packer
+# Configures WinRM HTTPS for Packer (based on automation_images approach)
 
 # Create marker file to confirm script ran
 $markerFile = "C:\Windows\Temp\packer-bootstrap-ran.txt"
@@ -15,7 +15,7 @@ function Log-Message {
     Write-Host $logLine
 }
 
-Log-Message "=== Starting WinRM bootstrap for Packer ==="
+Log-Message "=== Starting WinRM HTTPS bootstrap for Packer ==="
 
 try {
     # Set execution policy
@@ -27,11 +27,11 @@ try {
     $password = ConvertTo-SecureString "${winrm_password}" -AsPlainText -Force
     try {
         Set-LocalUser -Name "opc" -Password $password -ErrorAction Stop
-        Log-Message "Password set for opc user"
+        Log-Message "Password set for opc user via Set-LocalUser"
     } catch {
-        Log-Message "Warning: Could not set opc password: $($_.Exception.Message)"
-        # Try alternative method
-        net user opc "${winrm_password}" 2>&1 | Out-File -Append -FilePath $logFile
+        Log-Message "Set-LocalUser failed: $($_.Exception.Message), trying net user..."
+        $netResult = net user opc "${winrm_password}" 2>&1
+        Log-Message "net user result: $netResult"
     }
 
     # Stop WinRM to reconfigure
@@ -39,75 +39,56 @@ try {
     Stop-Service WinRM -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
 
-    # Delete all existing listeners
+    # Remove any existing WinRM listeners
     Log-Message "Removing existing WinRM listeners..."
-    Remove-Item -Path WSMan:\Localhost\listener\* -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -Path WSMan:\Localhost\listener\listener* -Recurse -Force -ErrorAction SilentlyContinue
 
-    # Quick configure WinRM
-    Log-Message "Running winrm quickconfig..."
-    winrm quickconfig -quiet -force 2>&1 | Out-File -Append -FilePath $logFile
+    # Create a self-signed certificate for HTTPS (like automation_images)
+    Log-Message "Creating self-signed certificate..."
+    $Cert = New-SelfSignedCertificate -CertstoreLocation Cert:\LocalMachine\My -DnsName "packer"
+    Log-Message "Certificate created with thumbprint: $($Cert.Thumbprint)"
 
-    # Create HTTP listener explicitly
-    Log-Message "Creating HTTP listener..."
-    New-Item -Path WSMan:\Localhost\Listener -Transport HTTP -Address * -Force -ErrorAction SilentlyContinue | Out-Null
-
-    # Configure WinRM service settings
+    # Configure WinRM settings
     Log-Message "Configuring WinRM settings..."
-    Set-Item WSMan:\localhost\Service\AllowUnencrypted -Value $true -Force
-    Set-Item WSMan:\localhost\Service\Auth\Basic -Value $true -Force
-    Set-Item WSMan:\localhost\Client\Auth\Basic -Value $true -Force
-    Set-Item WSMan:\localhost\Client\TrustedHosts -Value '*' -Force
-    Set-Item WSMan:\localhost\Shell\MaxMemoryPerShellMB -Value 2048 -Force
-    Set-Item WSMan:\localhost\MaxTimeoutms -Value 1800000 -Force
-    Log-Message "WinRM settings configured"
+    cmd.exe /c winrm set "winrm/config" '@{MaxTimeoutms="1800000"}' 2>&1 | Out-File -Append -FilePath $logFile
+    cmd.exe /c winrm set "winrm/config/service/auth" '@{Basic="true"}' 2>&1 | Out-File -Append -FilePath $logFile
+    cmd.exe /c winrm set "winrm/config/client/auth" '@{Basic="true"}' 2>&1 | Out-File -Append -FilePath $logFile
+
+    # Create HTTPS listener with certificate
+    Log-Message "Creating HTTPS listener..."
+    $listenerCmd = "winrm create `"winrm/config/listener?Address=*+Transport=HTTPS`" `"@{Port=`"5986`";Hostname=`"packer`";CertificateThumbprint=`"$($Cert.Thumbprint)`"}`""
+    Log-Message "Running: $listenerCmd"
+    cmd.exe /c $listenerCmd 2>&1 | Out-File -Append -FilePath $logFile
+    Log-Message "HTTPS listener created"
 
     # Configure firewall
     Log-Message "Configuring Windows Firewall..."
-
-    # Enable existing WinRM rules
-    Get-NetFirewallRule -DisplayGroup "Windows Remote Management" -ErrorAction SilentlyContinue |
-        Enable-NetFirewallRule -ErrorAction SilentlyContinue
-
-    # Add explicit rule for port 5985
-    New-NetFirewallRule -DisplayName "WinRM HTTP Packer" `
-        -Direction Inbound `
-        -Protocol TCP `
-        -LocalPort 5985 `
-        -Action Allow `
-        -Profile Any `
-        -ErrorAction SilentlyContinue | Out-Null
+    cmd.exe /c netsh advfirewall firewall set rule group="remote administration" new enable=yes 2>&1 | Out-File -Append -FilePath $logFile
+    cmd.exe /c netsh advfirewall firewall add rule name="WinRM HTTPS" dir=in action=allow protocol=TCP localport=5986 2>&1 | Out-File -Append -FilePath $logFile
     Log-Message "Firewall configured"
 
-    # Start WinRM service
+    # Enable and start WinRM service
     Log-Message "Starting WinRM service..."
-    Set-Service -Name WinRM -StartupType Automatic
-    Start-Service WinRM
+    cmd.exe /c sc config winrm start= auto 2>&1 | Out-File -Append -FilePath $logFile
+    cmd.exe /c net start winrm 2>&1 | Out-File -Append -FilePath $logFile
     Start-Sleep -Seconds 3
     Log-Message "WinRM service started"
 
-    # Verify WinRM is listening
-    $listeners = Get-ChildItem WSMan:\Localhost\Listener -ErrorAction SilentlyContinue
-    Log-Message "WinRM listeners count: $($listeners.Count)"
-    foreach ($listener in $listeners) {
-        $transport = ($listener | Get-ChildItem | Where-Object { $_.Name -eq "Transport" }).Value
-        $port = ($listener | Get-ChildItem | Where-Object { $_.Name -eq "Port" }).Value
-        Log-Message "  Listener: $transport on port $port"
-    }
-
-    # Verify WinRM is accepting connections
-    $tcpListener = Get-NetTCPConnection -LocalPort 5985 -ErrorAction SilentlyContinue
-    if ($tcpListener) {
-        Log-Message "TCP port 5985 is listening"
-    } else {
-        Log-Message "WARNING: TCP port 5985 is NOT listening"
-    }
-
-    # Test WinRM locally
-    Log-Message "Testing WinRM locally..."
-    $testResult = winrm enumerate winrm/config/listener 2>&1
+    # Verify WinRM is listening on HTTPS
+    Log-Message "Verifying WinRM HTTPS listener..."
+    $testResult = cmd.exe /c winrm enumerate winrm/config/listener 2>&1
     $testResult | Out-File -Append -FilePath $logFile
+    Log-Message "WinRM listener enumeration complete"
 
-    Log-Message "=== WinRM bootstrap completed successfully ==="
+    # Check if port 5986 is listening
+    $tcpListener = Get-NetTCPConnection -LocalPort 5986 -ErrorAction SilentlyContinue
+    if ($tcpListener) {
+        Log-Message "SUCCESS: TCP port 5986 is listening"
+    } else {
+        Log-Message "WARNING: TCP port 5986 is NOT listening yet"
+    }
+
+    Log-Message "=== WinRM HTTPS bootstrap completed successfully ==="
     "Bootstrap completed at $(Get-Date)" | Out-File -Append -FilePath $markerFile
 }
 catch {

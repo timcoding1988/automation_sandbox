@@ -71,6 +71,12 @@ variable "winrm_password" {
   default     = ""
 }
 
+variable "debug_mode" {
+  type        = bool
+  description = "Enable debug mode - extends timeout to 2 hours for manual troubleshooting"
+  default     = false
+}
+
 # Source: OCI Compute Instance
 source "oracle-oci" "windows-server" {
   compartment_ocid    = var.compartment_ocid
@@ -90,15 +96,15 @@ source "oracle-oci" "windows-server" {
   # Image naming
   image_name = "windows-server-${var.img_sfx}"
 
-  # WinRM communicator for Windows
-  communicator         = "winrm"
-  winrm_username       = "opc"
-  winrm_password       = var.winrm_password
-  winrm_insecure       = true
-  winrm_use_ssl        = false
-  winrm_port           = 5985
-  winrm_timeout        = "30m"
-  pause_before_connecting = "3m"  # Give cloudbase-init time to configure WinRM
+  # WinRM communicator for Windows (HTTPS like automation_images)
+  communicator            = "winrm"
+  winrm_username          = "opc"
+  winrm_password          = var.winrm_password
+  winrm_insecure          = true
+  winrm_use_ssl           = true
+  winrm_port              = 5986
+  winrm_timeout           = var.debug_mode ? "2h" : "30m"
+  pause_before_connecting = "4m"  # Give cloudbase-init time to configure WinRM
 
   # User data to configure WinRM (cloudbase-init format for OCI Windows)
   # The script must set password for opc user and enable WinRM
