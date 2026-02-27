@@ -107,10 +107,10 @@ source "oracle-oci" "windows-server" {
   pause_before_connecting = "4m"  # Give cloudbase-init time to configure WinRM
 
   # User data to configure WinRM (cloudbase-init format for OCI Windows)
-  # The script must set password for opc user and enable WinRM
-  user_data = base64encode(templatefile("${path.cwd}/packer/win-images/scripts/bootstrap.ps1.tpl", {
+  # Note: Don't base64encode - the plugin handles encoding automatically
+  user_data = templatefile("${path.cwd}/packer/win-images/scripts/bootstrap.ps1.tpl", {
     winrm_password = var.winrm_password
-  }))
+  })
 
   # Instance configuration
   instance_name = "packer-windows-server-${var.img_sfx}"

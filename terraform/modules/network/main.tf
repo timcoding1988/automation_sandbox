@@ -68,13 +68,32 @@ resource "oci_core_security_list" "image_builder" {
     }
   }
 
-  # ICMP for network diagnostics
+  # RDP (for Windows debugging)
+  ingress_security_rules {
+    protocol = "6" # TCP
+    source   = "0.0.0.0/0"
+    tcp_options {
+      min = 3389
+      max = 3389
+    }
+  }
+
+  # ICMP for network diagnostics (fragmentation needed)
   ingress_security_rules {
     protocol = "1" # ICMP
     source   = "0.0.0.0/0"
     icmp_options {
       type = 3
       code = 4
+    }
+  }
+
+  # ICMP echo (ping) for debugging
+  ingress_security_rules {
+    protocol = "1" # ICMP
+    source   = "0.0.0.0/0"
+    icmp_options {
+      type = 8
     }
   }
 }
