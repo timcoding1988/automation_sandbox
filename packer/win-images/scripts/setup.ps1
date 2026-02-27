@@ -61,9 +61,12 @@ Write-Host "$(Get-Date -Format 'HH:mm:ss') Installing .NET SDK..."
 .\dotnet-install.ps1 -InstallDir 'C:\Program Files\dotnet'
 Write-Host "$(Get-Date -Format 'HH:mm:ss') .NET SDK installed"
 
-# Configure NuGet
+# Configure NuGet (only add if not already present)
 Write-Host "$(Get-Date -Format 'HH:mm:ss') Configuring NuGet..."
-& 'C:\Program Files\dotnet\dotnet.exe' nuget add source https://api.nuget.org/v3/index.json -n nuget.org
+$sources = & 'C:\Program Files\dotnet\dotnet.exe' nuget list source
+if ($sources -notmatch 'nuget.org') {
+    & 'C:\Program Files\dotnet\dotnet.exe' nuget add source https://api.nuget.org/v3/index.json -n nuget.org
+}
 
 # Install WiX toolset
 Write-Host "$(Get-Date -Format 'HH:mm:ss') Installing WiX..."
