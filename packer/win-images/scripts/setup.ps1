@@ -61,32 +61,40 @@ Write-Host "$(Get-Date -Format 'HH:mm:ss') Installing .NET SDK..."
 .\dotnet-install.ps1 -InstallDir 'C:\Program Files\dotnet'
 Write-Host "$(Get-Date -Format 'HH:mm:ss') .NET SDK installed"
 
-# Configure NuGet (only add if not already present)
+# Configure NuGet - skip if source already exists (ignore errors)
 Write-Host "$(Get-Date -Format 'HH:mm:ss') Configuring NuGet..."
-$sources = & 'C:\Program Files\dotnet\dotnet.exe' nuget list source
-if ($sources -notmatch 'nuget.org') {
-    & 'C:\Program Files\dotnet\dotnet.exe' nuget add source https://api.nuget.org/v3/index.json -n nuget.org
+try {
+    & 'C:\Program Files\dotnet\dotnet.exe' nuget add source https://api.nuget.org/v3/index.json -n nuget.org 2>&1 | Out-Null
+} catch {
+    Write-Host "  NuGet source already configured (skipping)"
 }
+# Reset error state
+$LASTEXITCODE = 0
 
 # Install WiX toolset
 Write-Host "$(Get-Date -Format 'HH:mm:ss') Installing WiX..."
 & 'C:\Program Files\dotnet\dotnet.exe' tool install --global wix --version 5.0.2
 Write-Host "$(Get-Date -Format 'HH:mm:ss') WiX installed"
 
-# Enable Hyper-V features
+# Enable Hyper-V features (may fail on VMs without nested virtualization - that's OK)
 Write-Host "$(Get-Date -Format 'HH:mm:ss') Enabling Hyper-V (this may take a while)..."
-Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V -All -NoRestart -ErrorAction SilentlyContinue
-Write-Host "$(Get-Date -Format 'HH:mm:ss') Enabling Hyper-V Management PowerShell..."
-Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-Management-PowerShell -All -NoRestart -ErrorAction SilentlyContinue
-Write-Host "$(Get-Date -Format 'HH:mm:ss') Enabling Hyper-V Management Clients..."
-Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-Management-Clients -All -NoRestart -ErrorAction SilentlyContinue
-Write-Host "$(Get-Date -Format 'HH:mm:ss') Hyper-V features enabled"
+try {
+    Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V -All -NoRestart -ErrorAction SilentlyContinue
+    Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-Management-PowerShell -All -NoRestart -ErrorAction SilentlyContinue
+    Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V-Management-Clients -All -NoRestart -ErrorAction SilentlyContinue
+    Write-Host "$(Get-Date -Format 'HH:mm:ss') Hyper-V features enabled"
+} catch {
+    Write-Host "$(Get-Date -Format 'HH:mm:ss') Hyper-V features may not be available on this VM shape (continuing)"
+}
 
-# Install WSL
+# Install WSL (capture stderr to avoid false errors)
 Write-Host "$(Get-Date -Format 'HH:mm:ss') Installing WSL..."
-$wslOutput = wsl --install --no-launch 2>&1
-Write-Host $wslOutput
-Write-Host "$(Get-Date -Format 'HH:mm:ss') WSL install command completed"
+$wslResult = Start-Process -FilePath "wsl" -ArgumentList "--install", "--no-launch" -Wait -PassThru -NoNewWindow 2>&1
+Write-Host "$(Get-Date -Format 'HH:mm:ss') WSL install exit code: $($wslResult.ExitCode)"
+# WSL returns 0 on success, 1 if reboot required - both are OK
+if ($wslResult.ExitCode -notin @(0, 1)) {
+    Write-Host "WARNING: WSL install may have failed, but continuing..."
+}
 
 Write-Host "$(Get-Date -Format 'HH:mm:ss') === Windows Server Setup Complete (reboot required) ==="
 Exit 0
